@@ -1,0 +1,25 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Local environment configuration (contains sensitive tokens)
+.env
+
+# Linter / formatter caches
+.ruff_cache/
+.mypy_cache/
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Export output directories (generated at runtime)
+# Uncomment below if you want to ignore exported data:
+# *_bitlinks_*/
