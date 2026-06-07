@@ -1,25 +1,46 @@
-# Python-generated files
+# Byte-compiled / optimized files
 __pycache__/
-*.py[oc]
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
 build/
 dist/
 wheels/
-*.egg-info
+*.egg-info/
+.eggs/
+*.egg
 
-# Virtual environments
-.venv
+# Virtual Environments
+.venv/
+venv/
+env/
+ENV/
 
-# Local environment configuration (contains sensitive tokens)
+# Environment Variables (Security)
 .env
+.env.local
 
-# Linter / formatter caches
+# Linter / formatter / type caches
 .ruff_cache/
 .mypy_cache/
 
-# OS artifacts
-.DS_Store
-Thumbs.db
+# Unit tests / coverage reports
+.coverage
+htmlcov/
+.pytest_cache/
 
-# Export output directories (generated at runtime)
-# Uncomment below if you want to ignore exported data:
-# *_bitlinks_*/
+# Project-specific Output Directory
+# Generated analytics and CSV/JSON exports should NOT be committed to version control
+output/
+logs/
+Databricks/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db

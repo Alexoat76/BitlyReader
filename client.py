@@ -2,12 +2,13 @@
 """Bitly API Client Module.
 
 This module provides a world-class, robust client wrapper to interact with the
-Bitly API v4, supporting authentication, user details, groups, link shortening,
-link metadata retrieval, and click metrics/analytics with detailed error handling.
+Bitly API v4, supporting authentication, user details, groups, link
+shortening, link metadata retrieval, and click metrics/analytics with
+detailed error handling.
 """
 
 import logging
-from typing import Any
+from typing import Any, cast
 
 import requests
 
@@ -32,7 +33,7 @@ class BitlyNotFoundError(BitlyError):
 
 
 class BitlyUpgradeRequiredError(BitlyError):
-    """Exception raised when accessing an endpoint that requires an upgraded plan (HTTP 402)."""
+    """Exception raised when endpoint requires an upgraded plan (HTTP 402)."""
 
 
 class BitlyRateLimitError(BitlyError):
@@ -73,7 +74,9 @@ class BitlyClient:
             }
         )
 
-    def _request(self, method: str, endpoint: str, **kwargs) -> dict[str, Any]:
+    def _request(
+        self, method: str, endpoint: str, **kwargs: Any
+    ) -> dict[str, Any]:
         """Make an HTTP request to the Bitly API and handle errors.
 
         Args:
@@ -87,7 +90,7 @@ class BitlyClient:
         Raises:
             BitlyAuthenticationError: If the token is invalid or expired (401).
             BitlyForbiddenError: If access is forbidden (403).
-            BitlyNotFoundError: If the endpoint or resource does not exist (404).
+            BitlyNotFoundError: If endpoint or resource does not exist (404).
             BitlyUpgradeRequiredError: If an account upgrade is needed (402).
             BitlyRateLimitError: If rate limits are exceeded (429).
             BitlyAPIError: For other network or server errors.
@@ -98,10 +101,12 @@ class BitlyClient:
             response = self.session.request(method, url, timeout=15, **kwargs)
         except requests.RequestException as err:
             logger.error(f"Network error contacting Bitly API: {err}")
-            raise BitlyAPIError(f"Network error: Unable to connect to Bitly API. {err}") from err
+            raise BitlyAPIError(
+                f"Network error: Unable to connect to Bitly API. {err}"
+            ) from err
 
         if response.status_code in (200, 201):
-            return response.json()
+            return cast(dict[str, Any], response.json())
 
         # Some endpoints return 204 No Content with no response body
         if response.status_code == 204:
@@ -110,32 +115,40 @@ class BitlyClient:
         # Handle specific error status codes
         if response.status_code == 401:
             raise BitlyAuthenticationError(
-                "Authentication failed. Please verify your Bitly Generic Access Token."
+                "Authentication failed. Please verify your "
+                "Bitly Generic Access Token."
             )
         elif response.status_code == 402:
             raise BitlyUpgradeRequiredError(
-                "Upgrade required. Your Bitly account plan does not allow access to this resource."
+                "Upgrade required. Your Bitly account plan does not "
+                "allow access to this resource."
             )
         elif response.status_code == 403:
             raise BitlyForbiddenError(
-                "Forbidden. You do not have permissions to access this resource."
+                "Forbidden. You do not have permissions to "
+                "access this resource."
             )
         elif response.status_code == 404:
             raise BitlyNotFoundError(f"Resource not found: {endpoint}")
         elif response.status_code == 429:
             raise BitlyRateLimitError(
-                "Rate limit exceeded. Bitly restricts API requests. Please try again shortly."
+                "Rate limit exceeded. Bitly restricts API requests. "
+                "Please try again shortly."
             )
         else:
             try:
                 error_data = response.json()
                 error_msg = (
-                    error_data.get("description") or error_data.get("message") or response.text
+                    error_data.get("description")
+                    or error_data.get("message")
+                    or response.text
                 )
             except ValueError:
                 error_msg = response.text
 
-            raise BitlyAPIError(f"API Error ({response.status_code}): {error_msg}")
+            raise BitlyAPIError(
+                f"API Error ({response.status_code}): {error_msg}"
+            )
 
     def get_user(self) -> dict[str, Any]:
         """Retrieve the authenticated user's profile info.
@@ -154,9 +167,11 @@ class BitlyClient:
 
         """
         response = self._request("GET", "/groups")
-        return response.get("groups", [])
+        return cast(list[dict[str, Any]], response.get("groups", []))
 
-    def list_bitlinks(self, group_guid: str, page: int = 1, size: int = 50) -> dict[str, Any]:
+    def list_bitlinks(
+        self, group_guid: str, page: int = 1, size: int = 50
+    ) -> dict[str, Any]:
         """Retrieve a paginated list of bitlinks in the specified group.
 
         Args:
@@ -169,7 +184,9 @@ class BitlyClient:
 
         """
         params = {"page": page, "size": size}
-        return self._request("GET", f"/groups/{group_guid}/bitlinks", params=params)
+        return self._request(
+            "GET", f"/groups/{group_guid}/bitlinks", params=params
+        )
 
     def shorten_url(
         self,
@@ -204,7 +221,9 @@ class BitlyClient:
             try:
                 result = self.update_bitlink(bitlink_id, title=title)
             except BitlyError as err:
-                logger.warning(f"Successfully shortened, but failed to set title: {err}")
+                logger.warning(
+                    f"Successfully shortened, but failed to set title: {err}"
+                )
 
         return result
 
@@ -220,7 +239,9 @@ class BitlyClient:
         """
         return self._request("GET", f"/bitlinks/{bitlink}")
 
-    def update_bitlink(self, bitlink: str, title: str | None = None) -> dict[str, Any]:
+    def update_bitlink(
+        self, bitlink: str, title: str | None = None
+    ) -> dict[str, Any]:
         """Update fields of an existing bitlink.
 
         Args:
@@ -259,7 +280,9 @@ class BitlyClient:
         params: dict[str, Any] = {"unit": unit, "units": units}
         if unit_reference:
             params["unit_reference"] = unit_reference
-        return self._request("GET", f"/bitlinks/{bitlink}/clicks/summary", params=params)
+        return self._request(
+            "GET", f"/bitlinks/{bitlink}/clicks/summary", params=params
+        )
 
     def get_clicks(
         self,
@@ -283,7 +306,9 @@ class BitlyClient:
         params: dict[str, Any] = {"unit": unit, "units": units}
         if unit_reference:
             params["unit_reference"] = unit_reference
-        return self._request("GET", f"/bitlinks/{bitlink}/clicks", params=params)
+        return self._request(
+            "GET", f"/bitlinks/{bitlink}/clicks", params=params
+        )
 
     def get_referrers(
         self,
@@ -292,7 +317,7 @@ class BitlyClient:
         units: int = -1,
         unit_reference: str | None = None,
     ) -> dict[str, Any]:
-        """Retrieve click breakdown by referring domains for a specific bitlink.
+        """Retrieve click breakdown by referring domains for a bitlink.
 
         Args:
             bitlink: The shortened link (domain/hash, e.g., 'bit.ly/3abc123').
@@ -307,7 +332,9 @@ class BitlyClient:
         params: dict[str, Any] = {"unit": unit, "units": units}
         if unit_reference:
             params["unit_reference"] = unit_reference
-        return self._request("GET", f"/bitlinks/{bitlink}/referrers", params=params)
+        return self._request(
+            "GET", f"/bitlinks/{bitlink}/referrers", params=params
+        )
 
     def get_countries(
         self,
@@ -316,7 +343,7 @@ class BitlyClient:
         units: int = -1,
         unit_reference: str | None = None,
     ) -> dict[str, Any]:
-        """Retrieve click breakdown by geographic country for a specific bitlink.
+        """Retrieve click breakdown by geographic country for a bitlink.
 
         Args:
             bitlink: The shortened link (domain/hash, e.g., 'bit.ly/3abc123').
@@ -331,4 +358,6 @@ class BitlyClient:
         params: dict[str, Any] = {"unit": unit, "units": units}
         if unit_reference:
             params["unit_reference"] = unit_reference
-        return self._request("GET", f"/bitlinks/{bitlink}/countries", params=params)
+        return self._request(
+            "GET", f"/bitlinks/{bitlink}/countries", params=params
+        )

@@ -40,10 +40,16 @@ class TestBitlyClient(unittest.TestCase):
             BitlyClient("   ")
 
     def test_init_sets_correct_headers(self):
-        """Verify client sets standard API authorization and formatting headers."""
-        self.assertEqual(self.mock_session.headers["Authorization"], f"Bearer {self.token}")
-        self.assertEqual(self.mock_session.headers["Accept"], "application/json")
-        self.assertEqual(self.mock_session.headers["Content-Type"], "application/json")
+        """Verify client sets API authorization and formatting headers."""
+        self.assertEqual(
+            self.mock_session.headers["Authorization"], f"Bearer {self.token}"
+        )
+        self.assertEqual(
+            self.mock_session.headers["Accept"], "application/json"
+        )
+        self.assertEqual(
+            self.mock_session.headers["Content-Type"], "application/json"
+        )
         self.assertIn("User-Agent", self.mock_session.headers)
 
     def test_request_success(self):
@@ -131,7 +137,9 @@ class TestBitlyClient(unittest.TestCase):
         """Verify list_groups returns groups array."""
         mock_response = MagicMock()
         mock_response.status_code = 200
-        mock_response.json.return_value = {"groups": [{"guid": "G1", "name": "Org"}]}
+        mock_response.json.return_value = {
+            "groups": [{"guid": "G1", "name": "Org"}]
+        }
         self.mock_session.request.return_value = mock_response
 
         result = self.client.list_groups()
@@ -153,13 +161,18 @@ class TestBitlyClient(unittest.TestCase):
         )
 
     def test_shorten_url_without_title(self):
-        """Verify shorten_url sends proper payload and does not PATCH if title not given."""
+        """Verify shorten_url sends proper payload and ignores PATCH."""
         mock_response = MagicMock()
         mock_response.status_code = 200
-        mock_response.json.return_value = {"id": "bit.ly/3abc", "link": "https://bit.ly/3abc"}
+        mock_response.json.return_value = {
+            "id": "bit.ly/3abc",
+            "link": "https://bit.ly/3abc",
+        }
         self.mock_session.request.return_value = mock_response
 
-        result = self.client.shorten_url("https://example.com", group_guid="G123")
+        result = self.client.shorten_url(
+            "https://example.com", group_guid="G123"
+        )
         self.assertEqual(result["id"], "bit.ly/3abc")
         self.mock_session.request.assert_called_once_with(
             "POST",
@@ -173,11 +186,16 @@ class TestBitlyClient(unittest.TestCase):
         """Verify shorten_url performs PATCH when title is specified."""
         mock_response = MagicMock()
         mock_response.status_code = 200
-        mock_response.json.return_value = {"id": "bit.ly/3abc", "link": "https://bit.ly/3abc"}
+        mock_response.json.return_value = {
+            "id": "bit.ly/3abc",
+            "link": "https://bit.ly/3abc",
+        }
         self.mock_session.request.return_value = mock_response
         mock_update.return_value = {"id": "bit.ly/3abc", "title": "My Title"}
 
-        result = self.client.shorten_url("https://example.com", title="My Title")
+        result = self.client.shorten_url(
+            "https://example.com", title="My Title"
+        )
         self.assertEqual(result["title"], "My Title")
         mock_update.assert_called_once_with("bit.ly/3abc", title="My Title")
 
@@ -188,13 +206,96 @@ class TestBitlyClient(unittest.TestCase):
         mock_response.json.return_value = {"total_clicks": 42}
         self.mock_session.request.return_value = mock_response
 
-        result = self.client.get_click_summary("bit.ly/3abc", unit="week", units=4)
+        result = self.client.get_click_summary(
+            "bit.ly/3abc", unit="week", units=4
+        )
         self.assertEqual(result["total_clicks"], 42)
         self.mock_session.request.assert_called_once_with(
             "GET",
             "https://api-ssl.bitly.com/v4/bitlinks/bit.ly/3abc/clicks/summary",
             timeout=15,
             params={"unit": "week", "units": 4},
+        )
+
+    def test_request_connection_error(self):
+        """Verify RequestException translates to BitlyAPIError."""
+        self.mock_session.request.side_effect = (
+            requests.exceptions.ConnectionError("Connection Refused")
+        )
+        with self.assertRaises(BitlyAPIError):
+            self.client._request("GET", "/user")
+
+    def test_get_bitlink_details(self):
+        """Verify get_bitlink_details fetches properly."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "id": "bit.ly/3abc",
+            "title": "Details",
+        }
+        self.mock_session.request.return_value = mock_response
+
+        result = self.client.get_bitlink_details("bit.ly/3abc")
+        self.assertEqual(result["title"], "Details")
+        self.mock_session.request.assert_called_once_with(
+            "GET",
+            "https://api-ssl.bitly.com/v4/bitlinks/bit.ly/3abc",
+            timeout=15,
+        )
+
+    def test_update_bitlink(self):
+        """Verify update_bitlink sends PATCH."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "id": "bit.ly/3abc",
+            "title": "New Title",
+        }
+        self.mock_session.request.return_value = mock_response
+
+        result = self.client.update_bitlink("bit.ly/3abc", title="New Title")
+        self.assertEqual(result["title"], "New Title")
+        self.mock_session.request.assert_called_once_with(
+            "PATCH",
+            "https://api-ssl.bitly.com/v4/bitlinks/bit.ly/3abc",
+            timeout=15,
+            json={"title": "New Title"},
+        )
+
+    def test_get_referrers(self):
+        """Verify get_referrers fetches properly."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "metrics": [{"value": "direct", "clicks": 10}]
+        }
+        self.mock_session.request.return_value = mock_response
+
+        result = self.client.get_referrers("bit.ly/3abc")
+        self.assertEqual(result["metrics"][0]["value"], "direct")
+        self.mock_session.request.assert_called_once_with(
+            "GET",
+            "https://api-ssl.bitly.com/v4/bitlinks/bit.ly/3abc/referrers",
+            timeout=15,
+            params={"unit": "day", "units": -1},
+        )
+
+    def test_get_countries(self):
+        """Verify get_countries fetches properly."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "metrics": [{"value": "US", "clicks": 15}]
+        }
+        self.mock_session.request.return_value = mock_response
+
+        result = self.client.get_countries("bit.ly/3abc")
+        self.assertEqual(result["metrics"][0]["value"], "US")
+        self.mock_session.request.assert_called_once_with(
+            "GET",
+            "https://api-ssl.bitly.com/v4/bitlinks/bit.ly/3abc/countries",
+            timeout=15,
+            params={"unit": "day", "units": -1},
         )
 
 

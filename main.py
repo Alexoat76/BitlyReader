@@ -7,24 +7,36 @@ powered by the `rich` library.
 """
 
 import argparse
-import csv
-import json
+import logging
 import os
 import sys
 from datetime import datetime
 from typing import Any
 
+import questionary
 from dotenv import load_dotenv
 from rich.console import Console
 from rich.panel import Panel
-from rich.prompt import Confirm, Prompt
+from rich.progress import track
 from rich.status import Status
 from rich.table import Table
 
 from client import BitlyClient, BitlyError, BitlyUpgradeRequiredError
+from exporter import export_bitlinks
 
 # Initialize global Rich console for premium terminal rendering
 console = Console()
+
+custom_style = questionary.Style(
+    [
+        ("qmark", "fg:#00ffff bold"),
+        ("question", "fg:#ffffff bold"),
+        ("answer", "fg:#00ff00 bold"),
+        ("pointer", "fg:#ffff00 bold"),
+        ("highlighted", "fg:#ffff00 bold"),
+        ("choice", "fg:#cccccc"),
+    ]
+)
 
 
 def configure_env() -> str:
@@ -38,48 +50,120 @@ def configure_env() -> str:
         str: The validated Bitly Generic Access Token.
 
     Raises:
-        SystemExit: If the user declines to provide a token or provides an empty one.
+        SystemExit: If user declines token or provides an empty one.
 
     """
     load_dotenv()
     token = os.getenv("BITLY_ACCESS_TOKEN")
 
-    if token:
+    if token and token.strip() not in (
+        "",
+        "your_access_token_here",
+        "your_generated_access_token_here",
+    ):
         return token
 
     # Token is missing, guide the user to enter it interactively
     console.print(
         Panel.fit(
             "[bold yellow]Bitly Access Token not found![/bold yellow]\n\n"
-            "To consume data from the Bitly API, you need a Generic Access Token.\n"
-            "You can generate one in [bold cyan]Bitly settings -> API[/bold cyan]\n"
+            "To consume data from the Bitly API, you need a Generic "
+            "Access Token.\n"
+            "You can generate one in [bold cyan]Bitly settings -> "
+            "API[/bold cyan]\n"
             "at https://app.bitly.com/settings/api/.",
             title="Configuration Setup",
             border_style="yellow",
         )
     )
 
-    setup_now = Confirm.ask("Would you like to set up your Access Token now?")
+    setup_now = questionary.confirm(
+        "Would you like to set up your Access Token now?", style=custom_style
+    ).ask()
+
     if not setup_now:
         console.print(
-            "[bold red]Error: BITLY_ACCESS_TOKEN is required to run this tool. Exiting.[/bold red]"
+            "[bold red]Error: BITLY_ACCESS_TOKEN is required to run this "
+            "tool. Exiting.[/bold red]"
         )
         sys.exit(1)
 
-    entered_token = Prompt.ask("Please enter/paste your Bitly Access Token", password=True)
-    if not entered_token.strip():
-        console.print("[bold red]Error: Invalid token entered. Exiting.[/bold red]")
+    entered_token = questionary.password(
+        "Please enter/paste your Bitly Access Token", style=custom_style
+    ).ask()
+
+    if not entered_token or not entered_token.strip():
+        console.print(
+            "[bold red]Error: Invalid token entered. Exiting.[/bold red]"
+        )
         sys.exit(1)
 
     # Save token to .env file for future runs
     try:
         with open(".env", "a") as f:
             f.write(f"\nBITLY_ACCESS_TOKEN={entered_token.strip()}\n")
-        console.print("[bold green]Success: Token saved to .env file![/bold green]\n")
+        console.print(
+            "[bold green]Success: Token saved to .env file![/bold green]\n"
+        )
     except Exception as err:
-        console.print(f"[yellow]Warning: Could not save token to .env file: {err}[/yellow]")
+        console.print(
+            f"[yellow]Warning: Could not save token to .env file: "
+            f"{err}[/yellow]"
+        )
 
-    return entered_token.strip()
+    return str(entered_token.strip())
+
+
+def enrich_links_with_analytics(
+    client: BitlyClient, links: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Fetch and attach detailed analytics for each link.
+
+    Args:
+        client: The BitlyClient instance.
+        links: A list of link dictionaries to enrich.
+
+    Returns:
+        The enriched list of links.
+
+    """
+    console.print(
+        "[bold blue]Fetching advanced analytics for links...[/bold blue]"
+    )
+
+    for link in track(links, description="Enriching data"):
+        bitlink_id = link.get("id")
+        if not bitlink_id:
+            continue
+
+        clean_id = bitlink_id.replace("https://", "").replace("http://", "")
+
+        # Get total clicks
+        try:
+            summary = client.get_click_summary(clean_id)
+            link["total_clicks"] = summary.get("total_clicks", 0)
+        except BitlyError:
+            link["total_clicks"] = "N/A"
+
+        # Get referrers
+        try:
+            refs = client.get_referrers(clean_id).get("metrics", [])
+            link["referrers"] = refs
+        except BitlyUpgradeRequiredError:
+            link["referrers"] = "Upgrade Required"
+        except BitlyError:
+            link["referrers"] = "N/A"
+
+        # Get countries
+        try:
+            countries = client.get_countries(clean_id).get("metrics", [])
+            link["countries"] = countries
+        except BitlyUpgradeRequiredError:
+            link["countries"] = "Upgrade Required"
+        except BitlyError:
+            link["countries"] = "N/A"
+
+    return links
 
 
 def display_account_info(client: BitlyClient) -> str | None:
@@ -97,19 +181,25 @@ def display_account_info(client: BitlyClient) -> str | None:
             user = client.get_user()
             groups = client.list_groups()
         except BitlyError as err:
-            console.print(f"[bold red]\nFailed to retrieve account details: {err}[/bold red]")
+            console.print(
+                f"[bold red]\nFailed to retrieve account details: "
+                f"{err}[/bold red]"
+            )
             return None
 
     default_group = user.get("default_group_guid")
 
     emails = user.get("emails") or []
-    primary_email = next((e["email"] for e in emails if e.get("is_primary")), "N/A")
+    primary_email = next(
+        (e["email"] for e in emails if e.get("is_primary")), "N/A"
+    )
 
     panel_content = [
         f"[bold cyan]User Name:[/bold cyan] {user.get('name', 'N/A')}",
         f"[bold cyan]Login:[/bold cyan] {user.get('login', 'N/A')}",
         f"[bold cyan]Primary Email:[/bold cyan] {primary_email}",
-        f"[bold cyan]Default Group GUID:[/bold cyan] {default_group or 'N/A'}\n",
+        f"[bold cyan]Default Group GUID:[/bold cyan] "
+        f"{default_group or 'N/A'}\n",
     ]
 
     console.print(
@@ -122,7 +212,9 @@ def display_account_info(client: BitlyClient) -> str | None:
     )
 
     if groups:
-        table = Table(title="Available Groups", header_style="bold magenta", expand=True)
+        table = Table(
+            title="Available Groups", header_style="bold magenta", expand=True
+        )
         table.add_column("Index", justify="right", style="cyan", no_wrap=True)
         table.add_column("Group GUID", style="green", no_wrap=True)
         table.add_column("Group Name", style="white")
@@ -131,22 +223,26 @@ def display_account_info(client: BitlyClient) -> str | None:
         for idx, grp in enumerate(groups, 1):
             guid = grp.get("guid", "")
             is_def = "Yes" if guid == default_group else "No"
-            table.add_row(str(idx), guid, grp.get("name", "Unnamed Group"), is_def)
+            table.add_row(
+                str(idx), guid, grp.get("name", "Unnamed Group"), is_def
+            )
 
         console.print(table)
 
     return default_group
 
 
-def display_bitlinks(client: BitlyClient, group_guid: str) -> list[dict[str, Any]] | None:
-    """Fetch and list all available bitlinks in a group in a beautiful Rich table.
+def display_bitlinks(
+    client: BitlyClient, group_guid: str
+) -> list[dict[str, Any]] | None:
+    """Fetch and list available bitlinks in a group via a Rich table.
 
     Args:
         client (BitlyClient): The initialized Bitly API client instance.
         group_guid (str): The group GUID.
 
     Returns:
-        Optional[list[dict[str, Any]]]: A list of bitlinks if successful, otherwise None.
+        Optional[list[dict[str, Any]]]: Bitlinks if successful, else None.
 
     """
     with Status("[bold blue]Fetching bitlinks...", console=console):
@@ -154,7 +250,9 @@ def display_bitlinks(client: BitlyClient, group_guid: str) -> list[dict[str, Any
             response = client.list_bitlinks(group_guid, page=1, size=100)
             links = response.get("links") or []
         except BitlyError as err:
-            console.print(f"[bold red]\nFailed to retrieve bitlinks: {err}[/bold red]")
+            console.print(
+                f"[bold red]\nFailed to retrieve bitlinks: {err}[/bold red]"
+            )
             return None
 
     if not links:
@@ -196,13 +294,31 @@ def shorten_url_interactive(client: BitlyClient, default_group: str) -> None:
         default_group (str): Default group GUID.
 
     """
-    long_url = Prompt.ask("Enter the long URL to shorten")
-    if not long_url.strip():
+    long_url = questionary.text(
+        "Enter the long URL to shorten", style=custom_style
+    ).ask()
+
+    if not long_url or not long_url.strip():
         console.print("[bold red]URL must not be empty.[/bold red]")
         return
 
-    title = Prompt.ask("Enter an optional title/label for the link", default="")
-    domain = Prompt.ask("Enter an optional domain (e.g. 'bit.ly')", default="bit.ly")
+    title = (
+        questionary.text(
+            "Enter an optional title/label for the link",
+            default="",
+            style=custom_style,
+        ).ask()
+        or ""
+    )
+
+    domain = (
+        questionary.text(
+            "Enter an optional domain (e.g. 'bit.ly')",
+            default="bit.ly",
+            style=custom_style,
+        ).ask()
+        or "bit.ly"
+    )
 
     with Status("[bold blue]Shortening URL...", console=console):
         try:
@@ -219,7 +335,8 @@ def shorten_url_interactive(client: BitlyClient, default_group: str) -> None:
     panel_content = [
         f"[bold cyan]Short Link:[/bold cyan] {result.get('link', 'N/A')}",
         f"[bold cyan]Long URL:[/bold cyan] {result.get('long_url', 'N/A')}",
-        f"[bold cyan]Title:[/bold cyan] {result.get('title') or 'Untitled Link'}",
+        f"[bold cyan]Title:[/bold cyan] "
+        f"{result.get('title') or 'Untitled Link'}",
     ]
     console.print(
         Panel(
@@ -244,7 +361,9 @@ def view_link_analytics(client: BitlyClient, bitlink: str) -> None:
     # Remove http:// or https:// if present
     clean_bitlink = bitlink.replace("https://", "").replace("http://", "")
 
-    console.print(f"\n[bold cyan]Fetching analytics for {clean_bitlink}...[/bold cyan]")
+    console.print(
+        f"\n[bold cyan]Fetching analytics for {clean_bitlink}...[/bold cyan]"
+    )
 
     # Click Summary
     try:
@@ -263,8 +382,10 @@ def view_link_analytics(client: BitlyClient, bitlink: str) -> None:
         console.print(
             Panel(
                 "[bold yellow]Upgrade Required[/bold yellow]\n\n"
-                "Your Bitly account plan does not allow API access to click metrics.\n"
-                "To see total click counts, please upgrade your Bitly subscription.",
+                "Your Bitly account plan does not allow API access to "
+                "click metrics.\n"
+                "To see total click counts, please upgrade your "
+                "Bitly subscription.",
                 title="Click Summary",
                 border_style="yellow",
                 expand=False,
@@ -272,12 +393,16 @@ def view_link_analytics(client: BitlyClient, bitlink: str) -> None:
         )
         return
     except BitlyError as err:
-        console.print(f"[bold red]Error fetching click summary: {err}[/bold red]")
+        console.print(
+            f"[bold red]Error fetching click summary: {err}[/bold red]"
+        )
         return
 
     # If clicks are available, we can fetch referrers and countries
     try:
-        with Status("[bold blue]Retrieving referrers & countries...", console=console):
+        with Status(
+            "[bold blue]Retrieving referrers & countries...", console=console
+        ):
             referrers = client.get_referrers(clean_bitlink).get("metrics", [])
             countries = client.get_countries(clean_bitlink).get("metrics", [])
 
@@ -287,10 +412,14 @@ def view_link_analytics(client: BitlyClient, bitlink: str) -> None:
             ref_table.add_column("Referrer Domain", style="cyan")
             ref_table.add_column("Clicks", justify="right", style="magenta")
             for ref in referrers:
-                ref_table.add_row(ref.get("value", "unknown"), str(ref.get("clicks", 0)))
+                ref_table.add_row(
+                    ref.get("value", "unknown"), str(ref.get("clicks", 0))
+                )
             console.print(ref_table)
         else:
-            console.print("[yellow]No referrer data available for this link.[/yellow]")
+            console.print(
+                "[yellow]No referrer data available for this link.[/yellow]"
+            )
 
         # Display Countries Table
         if countries:
@@ -298,62 +427,29 @@ def view_link_analytics(client: BitlyClient, bitlink: str) -> None:
             ct_table.add_column("Country Code", style="cyan")
             ct_table.add_column("Clicks", justify="right", style="magenta")
             for ct in countries:
-                ct_table.add_row(ct.get("value", "unknown"), str(ct.get("clicks", 0)))
+                ct_table.add_row(
+                    ct.get("value", "unknown"), str(ct.get("clicks", 0))
+                )
             console.print(ct_table)
         else:
-            console.print("[yellow]No country data available for this link.[/yellow]")
+            console.print(
+                "[yellow]No country data available for this link.[/yellow]"
+            )
 
     except BitlyUpgradeRequiredError:
         console.print(
-            "[yellow]Note: Referrer and country breakdown requires an upgraded plan.[/yellow]"
+            "[yellow]Note: Referrer and country breakdown requires an "
+            "upgraded plan.[/yellow]"
         )
     except BitlyError as err:
-        console.print(f"[bold red]Error fetching detailed metrics: {err}[/bold red]")
+        console.print(
+            f"[bold red]Error fetching detailed metrics: {err}[/bold red]"
+        )
 
 
-def export_bitlinks(group_name: str, links: list[dict[str, Any]], format_type: str) -> None:
-    """Export bitlinks to separate files in a group-and-date folder.
-
-    Each link will be written to its own file named using its hash.
-
-    Args:
-        group_name (str): The name of the group.
-        links (list[dict[str, Any]]): The list of bitlinks.
-        format_type (str): The format to export to ('json' or 'csv').
-
-    """
-    date_str = datetime.now().strftime("%Y-%m-%d")
-    # Clean the group name for use as a folder name
-    safe_group_name = "".join(c for c in group_name if c.isalnum() or c in ("-", "_")).rstrip()
-    folder_name = f"{safe_group_name}_{date_str}"
-    os.makedirs(folder_name, exist_ok=True)
-
-    for link in links:
-        bitlink_id = link.get("id", "")
-        # Extract the hash/id part (e.g., bit.ly/3PRgy0g -> 3PRgy0g)
-        link_hash = bitlink_id.split("/")[-1] if "/" in bitlink_id else bitlink_id
-
-        file_path = os.path.join(folder_name, f"{link_hash}.{format_type}")
-
-        if format_type == "json":
-            with open(file_path, "w", encoding="utf-8") as f:
-                json.dump(link, f, indent=4, ensure_ascii=False)
-        elif format_type == "csv":
-            with open(file_path, "w", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
-                writer.writerow(["Field", "Value"])
-                for key, val in link.items():
-                    if isinstance(val, (dict, list)):
-                        val = json.dumps(val)
-                    writer.writerow([key, val])
-
-    console.print(
-        f"[bold green]Successfully exported {len(links)} bitlink(s) "
-        f"to '{folder_name}' folder![/bold green]"
-    )
-
-
-def explore_group_menu(client: BitlyClient, group_guid: str, group_name: str) -> None:
+def explore_group_menu(
+    client: BitlyClient, group_guid: str, group_name: str
+) -> None:
     """Explore option sub-menu for a specific group.
 
     Args:
@@ -364,53 +460,145 @@ def explore_group_menu(client: BitlyClient, group_guid: str, group_name: str) ->
     """
     while True:
         console.rule(f"[bold cyan]Group: {group_name}[/bold cyan]")
-        console.print("\n[bold]Options:[/bold]")
-        console.print("1. List all bitlinks")
-        console.print("2. Shorten a new URL")
-        console.print("3. View link analytics")
-        console.print("4. Export bitlinks to JSON")
-        console.print("5. Export bitlinks to CSV")
-        console.print("6. Return to main menu")
 
-        choice = Prompt.ask("Choose an action", choices=["1", "2", "3", "4", "5", "6"], default="6")
+        choice = questionary.select(
+            "Options:",
+            choices=[
+                "1. List all bitlinks",
+                "2. Shorten a new URL",
+                "3. View link analytics",
+                "4. Export bitlinks to JSON",
+                "5. Export bitlinks to CSV",
+                "6. Export bitlinks to BOTH (JSON & CSV)",
+                "7. Return to main menu",
+            ],
+            style=custom_style,
+        ).ask()
 
-        if choice == "1":
+        if not choice or choice.startswith("7"):
+            break
+
+        if choice.startswith("1"):
             display_bitlinks(client, group_guid)
 
-        elif choice == "2":
+        elif choice.startswith("2"):
             shorten_url_interactive(client, group_guid)
 
-        elif choice == "3":
+        elif choice.startswith("3"):
             links = display_bitlinks(client, group_guid)
             if links:
-                num = Prompt.ask("Select link # to view analytics (or Enter to cancel)", default="")
-                if num.strip():
+                num = questionary.text(
+                    "Select link # to view analytics (or Enter to cancel)",
+                    default="",
+                    style=custom_style,
+                ).ask()
+
+                if num and num.strip():
                     try:
                         idx = int(num) - 1
                         if 0 <= idx < len(links):
                             view_link_analytics(client, links[idx]["id"])
                         else:
-                            console.print("[bold red]Invalid selection.[/bold red]")
+                            console.print(
+                                "[bold red]Invalid selection.[/bold red]"
+                            )
                     except ValueError:
-                        console.print("[bold red]Please enter a valid integer.[/bold red]")
+                        console.print(
+                            "[bold red]Please enter a valid integer."
+                            "[/bold red]"
+                        )
 
-        elif choice in ("4", "5"):
-            fmt = "json" if choice == "4" else "csv"
-            with Status("[bold blue]Fetching all links for export...", console=console):
-                try:
-                    response = client.list_bitlinks(group_guid, page=1, size=100)
-                    links = response.get("links") or []
-                except BitlyError as err:
-                    console.print(f"[bold red]Failed to fetch links: {err}[/bold red]")
-                    links = []
+        elif (
+            choice.startswith("4")
+            or choice.startswith("5")
+            or choice.startswith("6")
+        ):
+            fmt = "both"
+            if choice.startswith("4"):
+                fmt = "json"
+            elif choice.startswith("5"):
+                fmt = "csv"
 
-            if links:
-                export_bitlinks(group_name, links, fmt)
+            target_type = questionary.select(
+                "Export all links or a specific link?",
+                choices=["All Links", "Specific Link"],
+                style=custom_style,
+            ).ask()
+
+            if not target_type:
+                continue
+
+            links_to_export = []
+            final_group_name = group_name
+            is_single_link = False
+
+            if "Specific" in target_type:
+                target_link = questionary.text(
+                    "Enter the specific Bitlink ID (e.g. bit.ly/3PRgy0g)",
+                    style=custom_style,
+                ).ask()
+
+                if not target_link or not target_link.strip():
+                    continue
+
+                is_single_link = True
+                clean_id = (
+                    target_link.strip()
+                    .replace("https://", "")
+                    .replace("http://", "")
+                )
+                with Status(
+                    f"[bold blue]Fetching details for {clean_id}...",
+                    console=console,
+                ):
+                    try:
+                        link_details = client.get_bitlink_details(clean_id)
+                        links_to_export = [link_details]
+                        final_group_name = (
+                            f"SingleLink_{clean_id.replace('/', '_')}"
+                        )
+                    except BitlyError as err:
+                        console.print(
+                            f"[bold red]Failed to fetch bitlink: "
+                            f"{err}[/bold red]"
+                        )
+            else:
+                with Status(
+                    "[bold blue]Fetching all links for export...",
+                    console=console,
+                ):
+                    try:
+                        response = client.list_bitlinks(
+                            group_guid, page=1, size=100
+                        )
+                        links_to_export = response.get("links") or []
+                    except BitlyError as err:
+                        console.print(
+                            f"[bold red]Failed to fetch links: "
+                            f"{err}[/bold red]"
+                        )
+
+            if links_to_export:
+                with_analytics = questionary.confirm(
+                    "Fetch and include detailed analytics "
+                    "(clicks, referrers, countries)?",
+                    style=custom_style,
+                ).ask()
+                has_analytics = bool(with_analytics)
+                if has_analytics:
+                    links_to_export = enrich_links_with_analytics(
+                        client, links_to_export
+                    )
+
+                export_bitlinks(
+                    final_group_name,
+                    links_to_export,
+                    fmt,
+                    is_single_link=is_single_link,
+                    has_analytics=has_analytics,
+                )
             else:
                 console.print("[yellow]No bitlinks found to export.[/yellow]")
-
-        elif choice == "6":
-            break
 
 
 def run_interactive_menu(client: BitlyClient) -> None:
@@ -430,56 +618,78 @@ def run_interactive_menu(client: BitlyClient) -> None:
         sys.exit(1)
 
     while True:
-        console.rule("[bold cyan]Bitly API Data Consumer & Shortener[/bold cyan]")
-        console.print("\n[bold]Main Menu:[/bold]")
-        console.print("1. Show account info & profile details")
-        console.print("2. Explore default group bitlinks and options")
-        console.print("3. Explore a specific group by index")
-        console.print("4. View analytics for any bitlink (direct input)")
-        console.print("5. Exit")
+        console.rule(
+            "[bold cyan]Bitly API Data Consumer & Shortener[/bold cyan]"
+        )
 
-        choice = Prompt.ask("Select an option", choices=["1", "2", "3", "4", "5"], default="5")
+        choice = questionary.select(
+            "Main Menu:",
+            choices=[
+                "1. Show account info & profile details",
+                "2. Explore default group bitlinks and options",
+                "3. Explore a specific group by index",
+                "4. View analytics for any bitlink (direct input)",
+                "5. Exit",
+            ],
+            style=custom_style,
+        ).ask()
 
-        if choice == "1":
+        if not choice or choice.startswith("5"):
+            console.print("\n[bold green]Goodbye![/bold green]")
+            break
+
+        if choice.startswith("1"):
             display_account_info(client)
 
-        elif choice == "2":
+        elif choice.startswith("2"):
             if default_group:
                 # Find group name
                 group_name = next(
-                    (g["name"] for g in groups if g["guid"] == default_group), "Default Group"
+                    (g["name"] for g in groups if g["guid"] == default_group),
+                    "Default Group",
                 )
                 explore_group_menu(client, default_group, group_name)
             else:
                 console.print(
-                    "[bold red]No default group configured on your Bitly account.[/bold red]"
+                    "[bold red]No default group configured on your "
+                    "Bitly account.[/bold red]"
                 )
 
-        elif choice == "3":
+        elif choice.startswith("3"):
             if not groups:
                 console.print("[yellow]No groups found.[/yellow]")
                 continue
 
             display_account_info(client)
-            num = Prompt.ask("Select group # to explore (or Enter to cancel)", default="")
-            if num.strip():
+            num = questionary.text(
+                "Select group # to explore (or Enter to cancel)",
+                default="",
+                style=custom_style,
+            ).ask()
+
+            if num and num.strip():
                 try:
                     idx = int(num) - 1
                     if 0 <= idx < len(groups):
-                        explore_group_menu(client, groups[idx]["guid"], groups[idx]["name"])
+                        explore_group_menu(
+                            client, groups[idx]["guid"], groups[idx]["name"]
+                        )
                     else:
-                        console.print("[bold red]Invalid selection.[/bold red]")
+                        console.print(
+                            "[bold red]Invalid selection.[/bold red]"
+                        )
                 except ValueError:
-                    console.print("[bold red]Please enter a valid integer.[/bold red]")
+                    console.print(
+                        "[bold red]Please enter a valid integer.[/bold red]"
+                    )
 
-        elif choice == "4":
-            bitlink = Prompt.ask("Enter Bitlink ID (e.g. bit.ly/3PRgy0g)")
-            if bitlink.strip():
+        elif choice.startswith("4"):
+            bitlink = questionary.text(
+                "Enter Bitlink ID (e.g. bit.ly/3PRgy0g)", style=custom_style
+            ).ask()
+
+            if bitlink and bitlink.strip():
                 view_link_analytics(client, bitlink.strip())
-
-        elif choice == "5":
-            console.print("\n[bold green]Goodbye![/bold green]")
-            break
 
 
 def main() -> None:
@@ -489,9 +699,34 @@ def main() -> None:
         SystemExit: On critical failures or user cancellation.
 
     """
+    os.makedirs("logs", exist_ok=True)
+    logging.basicConfig(
+        filename="logs/run.log",
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+    logging.info("BitlyReader CLI started.")
     try:
         parser = argparse.ArgumentParser(
-            description="A world-class CLI tool to fetch, shorten, and analyze Bitly links."
+            prog="BitlyReader",
+            description=(
+                "BitlyReader CLI 🚀\n"
+                "A world-class data pipeline for consuming, shortening, and "
+                "exporting Bitly link analytics.\n"
+                "----------------------------------------------------------"
+            ),
+            epilog=(
+                "Examples:\n"
+                "  Launch the interactive graphical menu:\n"
+                "  $ uv run main.py\n\n"
+                "  Export all links in both CSV and JSON formats "
+                "with analytics:\n"
+                "  $ uv run main.py --export both --with-analytics\n\n"
+                "  Shorten a custom URL and set a title:\n"
+                "  $ uv run main.py --shorten https://github.com "
+                "--title 'GitHub'\n"
+            ),
+            formatter_class=argparse.RawTextHelpFormatter,
         )
         parser.add_argument(
             "--list",
@@ -515,8 +750,18 @@ def main() -> None:
         )
         parser.add_argument(
             "--export",
-            choices=["csv", "json"],
-            help="Export all bitlinks for the default group directly.",
+            choices=["csv", "json", "both"],
+            help="Export bitlinks directly.",
+        )
+        parser.add_argument(
+            "--with-analytics",
+            action="store_true",
+            help="Fetch and include analytics for each exported bitlink.",
+        )
+        parser.add_argument(
+            "--bitlink",
+            type=str,
+            help="Specify a single bitlink to export instead of the group.",
         )
         parser.add_argument(
             "--group-guid",
@@ -542,7 +787,9 @@ def main() -> None:
             if group_guid:
                 display_bitlinks(client, group_guid)
             else:
-                console.print("[bold red]Error: No default group found.[/bold red]")
+                console.print(
+                    "[bold red]Error: No default group found.[/bold red]"
+                )
                 sys.exit(1)
 
         elif args.shorten:
@@ -558,7 +805,9 @@ def main() -> None:
                         group_guid=group_guid,
                         title=args.title,
                     )
-                    console.print("[bold green]Shortened successfully![/bold green]")
+                    console.print(
+                        "[bold green]Shortened successfully![/bold green]"
+                    )
                     console.print(f"Short Link: {result.get('link')}")
                 except BitlyError as err:
                     console.print(f"[bold red]API Error: {err}[/bold red]")
@@ -572,28 +821,79 @@ def main() -> None:
             groups = client.list_groups()
 
             if group_guid:
-                group_name = next((g["name"] for g in groups if g["guid"] == group_guid), "Group")
+                group_name = next(
+                    (g["name"] for g in groups if g["guid"] == group_guid),
+                    "Group",
+                )
             else:
                 user = client.get_user()
                 group_guid = user.get("default_group_guid")
                 group_name = next(
-                    (g["name"] for g in groups if g["guid"] == group_guid), "Default Group"
+                    (g["name"] for g in groups if g["guid"] == group_guid),
+                    "Default Group",
                 )
 
             if not group_guid:
-                console.print("[bold red]Error: Group GUID could not be determined.[/bold red]")
+                console.print(
+                    "[bold red]Error: Group GUID could not be determined."
+                    "[/bold red]"
+                )
                 sys.exit(1)
 
-            with Status("[bold blue]Fetching links for export...", console=console):
-                try:
-                    response = client.list_bitlinks(group_guid, page=1, size=100)
-                    links = response.get("links") or []
-                except BitlyError as err:
-                    console.print(f"[bold red]Failed to fetch links: {err}[/bold red]")
-                    sys.exit(1)
+            links_to_export = []
+            final_group_name = group_name
+            is_single_link = False
 
-            if links:
-                export_bitlinks(group_name, links, args.export)
+            if args.bitlink:
+                is_single_link = True
+                clean_id = args.bitlink.replace("https://", "").replace(
+                    "http://", ""
+                )
+                with Status(
+                    f"[bold blue]Fetching details for {clean_id}...",
+                    console=console,
+                ):
+                    try:
+                        link_details = client.get_bitlink_details(clean_id)
+                        links_to_export = [link_details]
+                        final_group_name = (
+                            f"SingleLink_{clean_id.replace('/', '_')}"
+                        )
+                    except BitlyError as err:
+                        console.print(
+                            f"[bold red]Failed to fetch bitlink: "
+                            f"{err}[/bold red]"
+                        )
+                        sys.exit(1)
+            else:
+                with Status(
+                    "[bold blue]Fetching links for export...", console=console
+                ):
+                    try:
+                        response = client.list_bitlinks(
+                            group_guid, page=1, size=100
+                        )
+                        links_to_export = response.get("links") or []
+                    except BitlyError as err:
+                        console.print(
+                            f"[bold red]Failed to fetch links: "
+                            f"{err}[/bold red]"
+                        )
+                        sys.exit(1)
+
+            if links_to_export:
+                has_analytics = bool(args.with_analytics)
+                if has_analytics:
+                    links_to_export = enrich_links_with_analytics(
+                        client, links_to_export
+                    )
+                export_bitlinks(
+                    final_group_name,
+                    links_to_export,
+                    args.export,
+                    is_single_link=is_single_link,
+                    has_analytics=has_analytics,
+                )
             else:
                 console.print("[yellow]No bitlinks found to export.[/yellow]")
 
@@ -602,7 +902,9 @@ def main() -> None:
             run_interactive_menu(client)
 
     except KeyboardInterrupt:
-        console.print("\n[bold yellow]Session cancelled by user. Goodbye![/bold yellow]")
+        console.print(
+            "\n[bold yellow]Session cancelled by user. Goodbye![/bold yellow]"
+        )
         sys.exit(0)
 
 

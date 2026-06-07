@@ -11,6 +11,7 @@ authors = [
 keywords = ["bitly", "api", "cli", "shortener", "link-analytics"]
 dependencies = [
     "python-dotenv>=1.2.2",
+    "questionary>=2.1.1",
     "requests>=2.34.2",
     "rich>=15.0.0",
 ]
@@ -22,16 +23,20 @@ BitlyReader = "main:main"
 package = true
 
 [tool.setuptools]
-py-modules = ["main", "client"]
+py-modules = ["main", "client", "exporter"]
 
 [dependency-groups]
 dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.1.0",
+    "mypy>=1.10.0",
+    "types-requests>=2.31.0.20240406",
     "ruff>=0.15.14",
 ]
 
 [tool.ruff]
 target-version = "py312"
-line-length = 100
+line-length = 79
 
 [tool.ruff.lint]
 select = [
